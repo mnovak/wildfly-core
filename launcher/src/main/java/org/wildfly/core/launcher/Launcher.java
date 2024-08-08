@@ -202,9 +202,7 @@ public class Launcher {
      * @see ProcessBuilder#environment()
      */
     public Launcher addEnvironmentVariable(final String key, final String value) {
-        if (key != null && value != null) {
-            env.put(key, value);
-        }
+        env.put(key, value);
         return this;
     }
 
@@ -218,11 +216,7 @@ public class Launcher {
      * @see ProcessBuilder#environment()
      */
     public Launcher addEnvironmentVariables(final Map<String, String> env) {
-        env.forEach((key, value) -> {
-            if (key != null && value != null) {
-                addEnvironmentVariable(key, value);
-            }
-        });
+        this.env.putAll(env);
         return this;
     }
 
