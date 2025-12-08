@@ -86,13 +86,18 @@ public class SuspendController implements ServerSuspendController, SuspendableAc
 
     @Override
     public CompletionStage<Void> suspend(ServerSuspendContext context) {
+        System.err.println("[" + Thread.currentThread().getName() + "] suspend() ENTER - current state: " + this.state.get());
         if (!this.state.compareAndSet(State.RUNNING, State.PRE_SUSPEND)) {
+            System.err.println("[" + Thread.currentThread().getName() + "] suspend() - CAS failed, returning activeSuspend");
             return this.activeSuspend;
         }
+        System.err.println("[" + Thread.currentThread().getName() + "] suspend() - CAS success, now PRE_SUSPEND");
         CompletableFuture<Void> future = new CompletableFuture<>();
         CompletableFuture<Void> result = future.whenComplete((ignore, exception) -> {
+            System.err.println("[" + Thread.currentThread().getName() + "] suspend.whenComplete() ENTER - state: " + this.state.get() + ", exception: " + exception);
             if (exception == null) {
                 this.state.set(State.SUSPENDED);
+                System.err.println("[" + Thread.currentThread().getName() + "] suspend.whenComplete() - state set to SUSPENDED");
                 for (OperationListener listener: this.listeners) {
                     try {
                         listener.complete();
@@ -101,6 +106,7 @@ public class SuspendController implements ServerSuspendController, SuspendableAc
                     }
                 }
             }
+            System.err.println("[" + Thread.currentThread().getName() + "] suspend.whenComplete() EXIT - final state: " + this.state.get());
         });
         this.activeSuspend = result;
         for (OperationListener listener: this.listeners) {
@@ -109,30 +115,38 @@ public class SuspendController implements ServerSuspendController, SuspendableAc
         // Collect stages in case we need to cancel them
         List<CompletionStage<Void>> phaseStages = new ArrayList<>(2);
         result.whenComplete(propagateCancellation(phaseStages));
+        System.err.println("[" + Thread.currentThread().getName() + "] suspend() - starting phaseStage for PREPARE");
         // Prepare activity groups in priority order, i.e. first -> last
         phaseStages.add(phaseStage(this.activityGroups, SuspendableActivity::prepare, context, (ignored, prepareException) -> {
+            System.err.println("[" + Thread.currentThread().getName() + "] suspend PREPARE complete - exception: " + prepareException);
             if (prepareException != null) {
                 // If prepare fails, log failure and complete with cancellation
                 ServerLogger.ROOT_LOGGER.suspendFailed(prepareException);
                 result.completeExceptionally(new CancellationException(prepareException.getMessage()));
             } else {
                 this.state.set(State.SUSPENDING);
+                System.err.println("[" + Thread.currentThread().getName() + "] suspend() - state set to SUSPENDING, starting SUSPEND phase");
                 // Suspend activity groups in priority order, i.e. first -> last order
                 phaseStages.add(phaseStage(this.activityGroups, SuspendableActivity::suspend, context, (ignore, suspendException) -> {
+                    System.err.println("[" + Thread.currentThread().getName() + "] suspend SUSPEND complete - exception: " + suspendException);
                     if (suspendException != null) {
                         future.completeExceptionally(suspendException);
                     } else {
+                        System.err.println("[" + Thread.currentThread().getName() + "] suspend SUSPEND - completing future");
                         future.complete(null);
                     }
                 }));
             }
         }));
+        System.err.println("[" + Thread.currentThread().getName() + "] suspend() EXIT - returning result future");
         return result;
     }
 
     @Override
     public CompletionStage<Void> resume(ServerResumeContext context) {
+        System.err.println("[" + Thread.currentThread().getName() + "] resume() ENTER - current state: " + this.state.get());
         if (this.state.get() == State.RUNNING) {
+            System.err.println("[" + Thread.currentThread().getName() + "] resume() - already RUNNING, returning COMPLETED");
             return SuspendableActivity.COMPLETED;
         }
         // Cancel any active suspend
@@ -140,15 +154,20 @@ public class SuspendController implements ServerSuspendController, SuspendableAc
         for (OperationListener listener: this.listeners) {
             listener.cancelled();
         }
+        System.err.println("[" + Thread.currentThread().getName() + "] resume() - creating resumeStage");
         CompletionStage<Void> resumeStage = phaseStage(this::resumeIterator, SuspendableActivity::resume, context, Functions.discardingBiConsumer());
         List<CompletionStage<Void>> phaseStages = List.of(resumeStage);
         // Resume activity groups in reverse priority order, i.e. last -> first
         CompletionStage<Void> result = resumeStage.whenComplete((ignore, exception) -> {
+            System.err.println("[" + Thread.currentThread().getName() + "] resume.whenComplete() ENTER - state: " + this.state.get() + ", exception: " + exception);
             if (exception == null) {
                 this.state.set(State.RUNNING);
+                System.err.println("[" + Thread.currentThread().getName() + "] resume.whenComplete() - state set to RUNNING");
             }
+            System.err.println("[" + Thread.currentThread().getName() + "] resume.whenComplete() EXIT - final state: " + this.state.get());
         });
         result.whenComplete(propagateCancellation(phaseStages));
+        System.err.println("[" + Thread.currentThread().getName() + "] resume() EXIT - returning result future");
         return result;
     }
 
@@ -165,10 +184,20 @@ public class SuspendController implements ServerSuspendController, SuspendableAc
      * @return a completion stage for this phase of the suspend/resume process
      */
     private static <C> CompletionStage<Void> phaseStage(Iterable<List<SuspendableActivity>> activityGroups, BiFunction<SuspendableActivity, C, CompletionStage<Void>> phase, C context, BiConsumer<Void, Throwable> completionHandler) {
+        System.err.println("[" + Thread.currentThread().getName() + "] phaseStage() ENTER");
         // Final stage will complete after all activity for all groups has completed
         CompletableFuture<Void> result = new CompletableFuture<>();
         // Make sure to register completion handler before initiating group completer
-        result.whenComplete(completionHandler);
+        result.whenComplete((v, ex) -> {
+            System.err.println("[" + Thread.currentThread().getName() + "] phaseStage result.whenComplete() - exception: " + ex);
+            try {
+                completionHandler.accept(v, ex);
+            } catch (Throwable t) {
+                System.err.println("[" + Thread.currentThread().getName() + "] phaseStage completionHandler threw exception: " + t);
+                t.printStackTrace(System.err);
+                throw t;
+            }
+        });
         // Collect stages in case we need to cancel them
         List<CompletionStage<Void>> groupStages = new LinkedList<>();
         result.whenComplete(propagateCancellation(groupStages));
@@ -177,20 +206,26 @@ public class SuspendController implements ServerSuspendController, SuspendableAc
         new BiConsumer<Void, Throwable>() {
             @Override
             public void accept(Void ignore, Throwable exception) {
+                System.err.println("[" + Thread.currentThread().getName() + "] phaseStage groupCompleter.accept() - exception: " + exception);
                 if (exception != null) {
+                    System.err.println("[" + Thread.currentThread().getName() + "] phaseStage - completing result exceptionally");
+                    exception.printStackTrace(System.err);
                     result.completeExceptionally(exception);
                 } else if (!groups.hasNext()) {
                     // No more groups
+                    System.err.println("[" + Thread.currentThread().getName() + "] phaseStage - no more groups, completing result");
                     result.complete(null);
                 } else {
                     // Create stage for next group
                     List<SuspendableActivity> activities = List.copyOf(groups.next());
+                    System.err.println("[" + Thread.currentThread().getName() + "] phaseStage - processing next group with " + activities.size() + " activities");
                     CompletableFuture<Void> groupStage = new CompletableFuture<>();
                     groupStages.add(groupStage);
                     // Reuse groupCompleter instance as completion handler
                     groupStage.whenComplete(this);
                     if (activities.isEmpty()) {
                         // No activities, complete immediately
+                        System.err.println("[" + Thread.currentThread().getName() + "] phaseStage - group is empty, completing immediately");
                         groupStage.complete(null);
                     } else {
                         // Collect stages in case we need to cancel them
@@ -202,19 +237,26 @@ public class SuspendController implements ServerSuspendController, SuspendableAc
                             BiConsumer<Void, Throwable> activityCompleter = new BiConsumer<>() {
                                 @Override
                                 public void accept(Void ignore, Throwable exception) {
+                                    System.err.println("[" + Thread.currentThread().getName() + "] phaseStage activityCompleter.accept() - exception: " + exception + ", remaining: " + activityCounter.get());
                                     if (exception != null) {
+                                        System.err.println("[" + Thread.currentThread().getName() + "] phaseStage - activity failed, completing group exceptionally");
+                                        exception.printStackTrace(System.err);
                                         groupStage.completeExceptionally(exception);
                                     } else if (activityCounter.decrementAndGet() == 0) {
                                         // All activities of group have completed
+                                        System.err.println("[" + Thread.currentThread().getName() + "] phaseStage - all activities in group completed");
                                         groupStage.complete(null);
                                     }
                                 }
                             };
                             try {
+                                System.err.println("[" + Thread.currentThread().getName() + "] phaseStage - calling phase.apply() for activity");
                                 CompletionStage<Void> stage = phase.apply(activity, context);
                                 stages.add(stage);
                                 stage.whenComplete(activityCompleter);
                             } catch (Throwable e) {
+                                System.err.println("[" + Thread.currentThread().getName() + "] phaseStage - phase.apply() threw exception: " + e);
+                                e.printStackTrace(System.err);
                                 activityCompleter.accept(null, e);
                             }
                         }
@@ -222,6 +264,7 @@ public class SuspendController implements ServerSuspendController, SuspendableAc
                 }
             }
         }.accept(null, null);
+        System.err.println("[" + Thread.currentThread().getName() + "] phaseStage() EXIT - returning result");
         return result;
     }
 
@@ -230,9 +273,13 @@ public class SuspendController implements ServerSuspendController, SuspendableAc
             @Override
             public void accept(Void result, Throwable exception) {
                 if (exception instanceof CancellationException) {
+                    System.err.println("[" + Thread.currentThread().getName() + "] propagateCancellation - cancelling " + stages.size() + " stages");
                     for (CompletionStage<Void> stage : stages) {
                         stage.toCompletableFuture().cancel(false);
                     }
+                } else if (exception != null) {
+                    System.err.println("[" + Thread.currentThread().getName() + "] propagateCancellation - non-cancellation exception: " + exception);
+                    exception.printStackTrace(System.err);
                 }
             }
         };
@@ -251,7 +298,17 @@ public class SuspendController implements ServerSuspendController, SuspendableAc
      */
     @Deprecated(forRemoval = true)
     public void resume() {
-        this.resume(Context.RUNNING).toCompletableFuture().join();
+        System.err.println("[" + Thread.currentThread().getName() + "] resume() DEPRECATED - calling async resume()");
+        try {
+            CompletableFuture<Void> future = this.resume(Context.RUNNING).toCompletableFuture();
+            System.err.println("[" + Thread.currentThread().getName() + "] resume() DEPRECATED - calling join()");
+            future.join();
+            System.err.println("[" + Thread.currentThread().getName() + "] resume() DEPRECATED - join() returned, state: " + this.state.get());
+        } catch (Throwable t) {
+            System.err.println("[" + Thread.currentThread().getName() + "] resume() DEPRECATED - exception caught: " + t);
+            t.printStackTrace(System.err);
+            throw t;
+        }
     }
 
     /**
@@ -259,12 +316,21 @@ public class SuspendController implements ServerSuspendController, SuspendableAc
      */
     @Deprecated(forRemoval = true)
     public void suspend(long timeoutMillis) {
-        ServerLogger.ROOT_LOGGER.suspendingServer(timeoutMillis, TimeUnit.MILLISECONDS);
-        CompletableFuture<Void> suspend = this.suspend(Context.RUNNING).toCompletableFuture();
-        if (timeoutMillis >= 0) {
-            suspend.completeOnTimeout(null, timeoutMillis, TimeUnit.MILLISECONDS);
+        System.err.println("[" + Thread.currentThread().getName() + "] suspend(" + timeoutMillis + ") DEPRECATED - calling async suspend()");
+        try {
+            ServerLogger.ROOT_LOGGER.suspendingServer(timeoutMillis, TimeUnit.MILLISECONDS);
+            CompletableFuture<Void> suspend = this.suspend(Context.RUNNING).toCompletableFuture();
+            if (timeoutMillis >= 0) {
+                suspend.completeOnTimeout(null, timeoutMillis, TimeUnit.MILLISECONDS);
+            }
+            System.err.println("[" + Thread.currentThread().getName() + "] suspend(" + timeoutMillis + ") DEPRECATED - calling join()");
+            suspend.join();
+            System.err.println("[" + Thread.currentThread().getName() + "] suspend(" + timeoutMillis + ") DEPRECATED - join() returned, state: " + this.state.get());
+        } catch (Throwable t) {
+            System.err.println("[" + Thread.currentThread().getName() + "] suspend(" + timeoutMillis + ") DEPRECATED - exception caught: " + t);
+            t.printStackTrace(System.err);
+            throw t;
         }
-        suspend.join();
     }
 
     private static <E> Iterator<E> reverseIterator(List<E> list) {

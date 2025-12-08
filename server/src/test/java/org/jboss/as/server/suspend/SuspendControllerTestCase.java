@@ -11,6 +11,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 
+import java.util.Arrays;
 import java.util.NavigableSet;
 import java.util.Objects;
 import java.util.Set;
@@ -356,6 +357,7 @@ public class SuspendControllerTestCase {
     }
 
     private void serverActivityCallbackOrderTest(CounterActivity... activities) {
+        System.err.println("testServerActivityCallbackOrder started with activities: " + Arrays.toString(activities));
         SuspendController testee = new SuspendController();
         Assert.assertSame(ServerSuspendController.State.SUSPENDED, testee.getState());
         testee.resume();
@@ -390,6 +392,7 @@ public class SuspendControllerTestCase {
         Assert.assertSame(ServerSuspendController.State.RUNNING, testee.getState());
 
         orderCheck(activitySet);
+        System.err.println("testServerActivityCallbackOrder finished with activities: " + Arrays.toString(activities));
     }
 
     private void orderCheck(NavigableSet<CounterActivity> activities) {
@@ -475,28 +478,34 @@ public class SuspendControllerTestCase {
 
         @Override
         public CompletionStage<Void> prepare(ServerSuspendContext context) {
+            System.err.println("[" + Thread.currentThread().getName() + "] CounterActivity." + id + ".prepare() called");
             return CompletableFuture.runAsync(this::preSuspend);
         }
 
         @Override
         public CompletionStage<Void> suspend(ServerSuspendContext context) {
+            System.err.println("[" + Thread.currentThread().getName() + "] CounterActivity." + id + ".suspend() called");
             return CompletableFuture.runAsync(this::suspended);
         }
 
         @Override
         public CompletionStage<Void> resume(ServerResumeContext context) {
+            System.err.println("[" + Thread.currentThread().getName() + "] CounterActivity." + id + ".resume() called");
             return CompletableFuture.runAsync(this::resume);
         }
 
         private void preSuspend() {
+            System.err.println("[" + Thread.currentThread().getName() + "] CounterActivity." + id + ".preSuspend() EXECUTING");
             this.preSuspend = invocationCounter.getAndIncrement();
         }
 
         private void suspended() {
+            System.err.println("[" + Thread.currentThread().getName() + "] CounterActivity." + id + ".suspended() EXECUTING");
             this.suspended = invocationCounter.getAndIncrement();
         }
 
         private void resume() {
+            System.err.println("[" + Thread.currentThread().getName() + "] CounterActivity." + id + ".resume() EXECUTING");
             this.resume = invocationCounter.getAndIncrement();
         }
 
